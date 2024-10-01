@@ -201,6 +201,10 @@ class ExplainBot:
         """Returns the study group."""
         return self.study_group
 
+    def get_feature_display_name_dict(self):
+        template_manager = self.conversation.get_var("experiment_helper").contents.template_manager
+        return template_manager.feature_display_names.feature_name_to_display_name
+
     def get_current_prediction(self):
         """
         Returns the current prediction.

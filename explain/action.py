@@ -191,7 +191,7 @@ def compute_explanation_report(conversation,
 
     model_prediction_str = conversation.get_class_name_from_label(np.argmax(model_prediction_probas))
     opposite_class = conversation.get_class_name_from_label(np.argmin(model_prediction_probas))
-    template_manager = conversation.get_var('template_manager').contents
+    template_manager = conversation.get_var("experiment_helper").contents.template_manager
 
     # Get already sorted feature importances
     feature_importances = explain_feature_importances_as_plot(conversation, data, parse_op, regen,
