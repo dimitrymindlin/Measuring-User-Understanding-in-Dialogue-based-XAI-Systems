@@ -6,8 +6,19 @@ Additionally,
 the [experiment frontend](https://github.com/dimitrymindlin/Measuring-User-Understanding-in-Dialogue-based-XAI-Systems-Frontend.git)
 is needed to run the experiment UI.
 
+## Table of Contents
+- [Installation](#installation)
+- [Starting the Experiment locally](#starting-the-experiment-locally)
+- [Starting the Experiment in docker](#starting-the-experiment-in-docker)
+- [Analysing the experiment results](#analysing-the-experiment)
+- [Running on your own models and datasets](#running-on-your-own-models-and-datasets)
+- [Main changes compared to TalkToModel](#main-changes-compared-to-talktomodel)
+- [Citation](#citation)
+
 ## Starting the Experiment locally
 
+- create and activate a virtual environment with python 3.9 
+  - e.g. ``conda create -n dialogue-xai python=3.9``
 - install requirements
 - run flask_app.py 
   - While Running the app will display a link to a frontend, this is the old talk-to-model frontend and is currently not
@@ -29,7 +40,7 @@ is needed to run the experiment UI.
 ## Running on your own models and datasets
 
 ### Model and Dataset
-The data folder contains the data and train scripts. For example, adult.csv is used in adult_train.py to train a 
+The `data` folder contains the data and train scripts. For example, `adult.csv` is used in `adult_train.py` to train a 
 random forest model and save the model, model settings and column information in a separate folder 'adult' for the 
 explanations later on. When introducing a new dataset, make a new train script and make sure to save the column mappings
 and settings in a separate folder.
