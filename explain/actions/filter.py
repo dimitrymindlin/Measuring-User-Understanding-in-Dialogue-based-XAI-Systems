@@ -29,44 +29,44 @@ def numerical_filter(parse_text, temp_dataset, i, feature_name):
     greater than, equal to, etc.) and then performs the operation.
     """
     # Greater than or equal to
-    if parse_text[i+2] == 'greater' and parse_text[i+3] == 'equal':
+    if parse_text[i + 2] == 'greater' and parse_text[i + 3] == 'equal':
         print(parse_text)
-        feature_value = float(parse_text[i+5])
+        feature_value = float(parse_text[i + 5])
         bools = temp_dataset['X'][feature_name] >= feature_value
         updated_dset = filter_dataset(temp_dataset, bools)
         interpretable_parse_text = format_parse_string(
             feature_name, feature_value, "greater than or equal to")
     # Greater than
-    elif parse_text[i+2] == 'greater':
-        feature_value = float(parse_text[i+4])
+    elif parse_text[i + 2] == 'greater':
+        feature_value = float(parse_text[i + 4])
         bools = temp_dataset['X'][feature_name] > feature_value
         updated_dset = filter_dataset(temp_dataset, bools)
         interpretable_parse_text = format_parse_string(
             feature_name, feature_value, "greater than")
     # Less than or equal to
-    elif parse_text[i+2] == 'less' and parse_text[i+3] == 'equal':
-        feature_value = float(parse_text[i+5])
+    elif parse_text[i + 2] == 'less' and parse_text[i + 3] == 'equal':
+        feature_value = float(parse_text[i + 5])
         bools = temp_dataset['X'][feature_name] <= feature_value
         updated_dset = filter_dataset(temp_dataset, bools)
         interpretable_parse_text = format_parse_string(
             feature_name, feature_value, "less than or equal to")
     # Less than
-    elif parse_text[i+2] == 'less':
-        feature_value = float(parse_text[i+4])
+    elif parse_text[i + 2] == 'less':
+        feature_value = float(parse_text[i + 4])
         bools = temp_dataset['X'][feature_name] < feature_value
         updated_dset = filter_dataset(temp_dataset, bools)
         interpretable_parse_text = format_parse_string(
             feature_name, feature_value, "less than")
     # Equal to
-    elif parse_text[i+2] == 'equal':
-        feature_value = float(parse_text[i+4])
+    elif parse_text[i + 2] == 'equal':
+        feature_value = float(parse_text[i + 4])
         bools = temp_dataset['X'][feature_name] == feature_value
         updated_dset = filter_dataset(temp_dataset, bools)
         interpretable_parse_text = format_parse_string(
             feature_name, feature_value, "equal to")
     # Not equal to
-    elif parse_text[i+2] == 'not':
-        feature_value = float(parse_text[i+5])
+    elif parse_text[i + 2] == 'not':
+        feature_value = float(parse_text[i + 5])
         bools = temp_dataset['X'][feature_name] != feature_value
         updated_dset = filter_dataset(temp_dataset, bools)
         interpretable_parse_text = format_parse_string(
@@ -78,7 +78,7 @@ def numerical_filter(parse_text, temp_dataset, i, feature_name):
 
 def categorical_filter(parse_text, temp_dataset, conversation, i, feature_name):
     """Perform categorical filtering of a data set."""
-    feature_value = parse_text[i+2]
+    feature_value = parse_text[i + 2]
 
     interpretable_parse_text = f"{feature_name} equal to {str(feature_value)}"
 
@@ -164,11 +164,16 @@ def filter_operation(conversation, parse_text, i, is_or=False, **kwargs):
         temp_dataset = conversation.temp_dataset.contents
 
     operation = parse_text[i]
-    feature_name = parse_text[i+1]
+    feature_name = parse_text[i + 1]
+
+    # Turn to lower case
+    categorical_features = [f.lower() for f in temp_dataset['cat']]
+    numerical_features = [f.lower() for f in temp_dataset['numeric']]
+
     if feature_name == 'id':
         # Id isn't included as a categorical feature in the data,
         # so get this by using .loc
-        feature_value = int(parse_text[i+2])
+        feature_value = int(parse_text[i + 2])
         updated_dset = temp_dataset
 
         # If id never appears in index, set the data to empty
@@ -185,9 +190,9 @@ def filter_operation(conversation, parse_text, i, is_or=False, **kwargs):
         updated_dset, interp_parse_text = prediction_filter(temp_dataset, conversation, feature_name)
     elif operation == "labelfilter":
         updated_dset, interp_parse_text = label_filter(temp_dataset, conversation, feature_name)
-    elif feature_name in temp_dataset['cat'] or feature_name == "incorrect":
+    elif feature_name in categorical_features or feature_name == "incorrect":
         updated_dset, interp_parse_text = categorical_filter(parse_text, temp_dataset, conversation, i, feature_name)
-    elif feature_name in temp_dataset['numeric']:
+    elif feature_name in numerical_features:
         updated_dset, interp_parse_text = numerical_filter(parse_text, temp_dataset, i, feature_name)
     else:
         raise NameError(f"Parsed unkown feature name {feature_name}")

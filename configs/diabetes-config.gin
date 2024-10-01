@@ -57,8 +57,16 @@ MegaExplainer.use_selection = False
 # Tabular Dice Params
 TabularDice.cache_location = "./cache/diabetes-dice-tabular.pkl"
 
+# Tabular Anchor Params
+TabularAnchor.cache_location = "./cache/diabetes-anchor-tabular.pkl"
+
 # Conversation params
 Conversation.class_names = {0: "unlikely to have diabetes", 1: "likely to have diabetes"}
+
+# Experiment Helper
+ExperimentHelper.categorical_mapping_path = "./data/diabetes/categorical_mapping.json"
+ExperimentHelper.encoded_col_mapping_path = "./data/diabetes/encoded_col_mapping.json"
+ExperimentHelper.feature_ordering = None
 
 # Dataset description
 DatasetDescription.dataset_objective = "predict whether someone has diabetes"

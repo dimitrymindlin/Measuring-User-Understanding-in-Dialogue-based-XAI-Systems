@@ -21,7 +21,8 @@ class DatasetDescription:
                  model_description: str = "",
                  eval_file_path: str = None,
                  index_col: int = 0,
-                 target_var_name: str = "y"):
+                 target_var_name: str = "y",
+                 user_study_objective: str = ""):
         """Init.
 
         Arguments:
@@ -35,6 +36,7 @@ class DatasetDescription:
             target_var_name: The target variable name in the testing data
             model_description: A description of the model. i.e., gradient boosted tree or linear
                                regression
+            user_study_objective: The goal of the user study. I.e., "understand how the ml model makes decisions"
         """
         self.objective = dataset_objective
         self.description = dataset_description
@@ -42,10 +44,15 @@ class DatasetDescription:
         self.index_col = index_col
         self.target_var_name = target_var_name
         self.model_description = model_description
+        self.user_study_objective = user_study_objective
 
     def get_dataset_objective(self):
         """Gets the objective."""
         return self.objective
+
+    def get_user_study_objective(self):
+        """Gets the user study objective."""
+        return self.user_study_objective
 
     def get_dataset_description(self):
         """Gets the description."""

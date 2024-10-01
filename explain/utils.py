@@ -14,9 +14,9 @@ def read_and_format_data(filepath,
                          cat_features,
                          num_features,
                          remove_underscores=True) -> tuple[DataFrame,
-                                                           Series,
-                                                           list[str],
-                                                           list[str]]:
+Series,
+list[str],
+list[str]]:
     """Reads and processes data.
 
     This routine loads and formats the data to be included in the
@@ -48,6 +48,10 @@ def read_and_format_data(filepath,
     """
     # Load the dataset
     dataset = pd.read_csv(filepath, index_col=index_col)
+
+    # If first column at index_col is called "unnamed: 0", rename it to "id"
+    if dataset.columns[index_col] == "unnamed: 0":
+        dataset.rename(columns={"unnamed: 0": "id"}, inplace=True)
 
     # Underscores hurt decoding performance in feature names, remove them
     # for better performance, if requested.

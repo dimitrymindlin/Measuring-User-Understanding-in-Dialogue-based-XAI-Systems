@@ -4,10 +4,10 @@ import logging
 from logging.config import dictConfig
 import os
 import traceback
-
-from flask import Flask
+from flask import Flask, jsonify
 from flask import render_template, request, Blueprint
 import gin
+from flask_cors import CORS
 
 from explain.logic import ExplainBot
 from explain.sample_prompts_by_action import sample_prompt_for_action
@@ -50,16 +50,131 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # Parse application level configs
 gin.parse_config_file(args.config)
 
-# Setup the explainbot
-BOT = ExplainBot()
+# Setup the explainbot dict to run multiple bots
+bot_dict = {}
+
+TTM_Bot = ExplainBot("")
 
 
 @bp.route('/')
 def home():
     """Load the explanation interface."""
+    # Setup the explainbot
     app.logger.info("Loaded Login")
-    objective = BOT.conversation.describe.get_dataset_objective()
+    objective = TTM_Bot.conversation.describe.get_dataset_objective()
     return render_template("index.html", currentUserId="user", datasetObjective=objective)
+
+
+@bp.route('/init', methods=['GET'])
+def init_experiment():
+    """Load the explanation interface."""
+    user_id = request.args.get("user_id")
+    study_group = request.args.get("study_group")
+    if user_id is None or "":
+        user_id = "TEST"
+    if study_group is None or "":
+        study_group = "interactive"
+    BOT = ExplainBot(study_group)
+    bot_dict[user_id] = BOT
+    app.logger.info("Loaded Login and created bot")
+
+    # Feature tooltip and units
+    feature_tooltip = bot_dict[user_id].get_feature_tooltips()
+    feature_units = bot_dict[user_id].get_feature_units()
+    questions = bot_dict[user_id].get_questions()
+    ordered_feature_names = bot_dict[user_id].get_feature_names()
+    user_experiment_prediction_choices = bot_dict[user_id].conversation.class_names
+    user_study_task_description = bot_dict[user_id].conversation.describe.get_user_study_objective()
+    result = {
+        "feature_tooltips": feature_tooltip,
+        "feature_units": feature_units,
+        'questions': questions,
+        'feature_names': ordered_feature_names,
+        'prediction_choices': user_experiment_prediction_choices,
+        'user_study_task_description': user_study_task_description
+    }
+    return result
+
+
+def get_datapoint(user_id, datapoint_type, return_probability=False):
+    """
+    Get a datapoint from the dataset based on the datapoint type.
+    """
+    if user_id is None:
+        user_id = "TEST"
+    current_instance_with_units, instance_counter = bot_dict[user_id].get_next_instance_triple(datapoint_type,
+                                                                                               return_probability=return_probability)
+    (instance_id, instance_dict, probas, ml_label, _) = current_instance_with_units
+    instance_dict["id"] = str(instance_id)
+    if return_probability:
+        instance_dict["probabilities"] = probas
+    instance_dict["ml_prediction"] = ml_label
+    return instance_dict
+
+
+@bp.route('/get_train_datapoint', methods=['GET'])
+def get_train_datapoint():
+    """
+    Get a new datapoint from the dataset.
+    """
+    user_id = request.args.get("user_id")
+    user_study_group = bot_dict[user_id].get_study_group()
+    result_dict = get_datapoint(user_id, "train")
+
+    if user_study_group == "interactive":
+        prompt = f"""
+            The model predicts that the current {bot_dict[user_id].instance_type_naming} is <b>{result_dict["ml_prediction"]}</b>. <br>
+            If you have questions about the prediction, select questions from the right and I will answer them.
+            """
+    else:  # chat
+        prompt = f"""
+            The model predicts that the current {bot_dict[user_id].instance_type_naming} is <b>{result_dict["ml_prediction"]}</b>. <br>
+            If you have questions about the prediction, <b>type them</b> in the chat and I will answer them.
+            """
+
+    # Create message dict to return ({isUser: false, feedback: false, text: initial_prompt, id: 1000})
+    result_dict["initial_message"] = {
+        "isUser": False,
+        "feedback": False,
+        "text": prompt,
+        "id": 1000,
+        "followup": None
+        # [{"id": "shapAllFeatures", "question": "Would you like to see the feature contributions?"}]
+    }
+
+    if user_study_group == "static":
+        # Get the explanation report
+        static_report = bot_dict[user_id].get_explanation_report()
+        static_report["instance_type"] = bot_dict[user_id].instance_type_naming
+        result_dict["static_report"] = static_report
+    return result_dict
+
+
+@bp.route('/get_test_datapoint', methods=['GET'])
+def get_test_datapoint():
+    """
+    Get a new datapoint from the dataset.
+    """
+    user_id = request.args.get("user_id")
+    return get_datapoint(user_id, "test")
+
+
+@bp.route('/get_final_test_datapoint', methods=['GET'])
+def get_final_test_datapoint():
+    """
+    Get a final test datapoint from the dataset.
+    """
+    user_id = request.args.get("user_id")
+    return get_datapoint(user_id, "final_test")
+
+
+@bp.route('/get_intro_test_datapoint', methods=['GET'])
+def get_intro_test_datapoint():
+    """
+    Get a final test datapoint from the dataset.
+    """
+    user_id = request.args.get("user_id")
+    return get_datapoint(user_id, "intro_test")
 
 
 @bp.route("/log_feedback", methods=['POST'])
@@ -84,8 +199,37 @@ def log_feedback():
         "username": username
     }
 
-    BOT.log(logging_info)
+    TTM_Bot.log(logging_info)
     return ""
+
+
+@bp.route("/get_user_correctness", methods=['GET'])
+def get_user_correctness():
+    user_id = request.args.get("user_id")
+    if user_id is None:
+        user_id = "TEST"
+    bot = bot_dict[user_id]
+    correctness_string = bot.get_user_correctness()
+    response = {"correctness_string": correctness_string}
+    return response
+
+
+@bp.route('/finish', methods=['DELETE'])
+def finish():
+    """
+    Finish the experiment.
+    """
+    user_id = request.args.get("user_id")
+    if user_id is None:
+        user_id = "TEST"
+    # Remove the bot from the dict
+    try:
+        bot_dict.pop(user_id)
+    except KeyError:
+        print(f"User {user_id} sent finish again, but the Bot was not in the dict.")
+        return "200 OK"
+    print(f"User {user_id} finished the experiment. And the Bot was removed from the dict.")
+    return "200 OK"
 
 
 @bp.route("/sample_prompt", methods=["Post"])
@@ -96,30 +240,31 @@ def sample_prompt():
     username = data["thisUserName"]
 
     prompt = sample_prompt_for_action(action,
-                                      BOT.prompts.filename_to_prompt_id,
-                                      BOT.prompts.final_prompt_set,
-                                      real_ids=BOT.conversation.get_training_data_ids())
+                                      TTM_Bot.prompts.filename_to_prompt_id,
+                                      TTM_Bot.prompts.final_prompt_set,
+                                      real_ids=TTM_Bot.conversation.get_training_data_ids())
 
     logging_info = {
         "username": username,
         "requested_action_generation": action,
         "generated_prompt": prompt
     }
-    BOT.log(logging_info)
+    TTM_Bot.log(logging_info)
 
     return prompt
 
 
-@bp.route("/get_response", methods=['POST'])
-def get_bot_response():
+@bp.route("/get_nl_response", methods=['POST'])
+def get_bot_response_from_nl():
     """Load the box response."""
     if request.method == "POST":
         app.logger.info("generating the bot response")
         try:
             data = json.loads(request.data)
+            print(data)
             user_text = data["userInput"]
-            conversation = BOT.conversation
-            response = BOT.update_state(user_text, conversation)
+            conversation = TTM_Bot.conversation
+            response = TTM_Bot.update_state_ttm(user_text, conversation)
         except Exception as ext:
             app.logger.info(f"Traceback getting bot response: {traceback.format_exc()}")
             app.logger.info(f"Exception getting bot response: {ext}")
@@ -127,8 +272,51 @@ def get_bot_response():
         return response
 
 
+@bp.route("/get_response_clicked", methods=['POST'])
+def get_bot_response_clicked():
+    """Load the box response."""
+    user_id = request.args.get("user_id")
+    if user_id is None:
+        user_id = "TEST"
+    if request.method == "POST":
+        app.logger.info("generating the bot response")
+        try:
+            data = json.loads(request.data)
+            question_id = data["question"]
+            feature_id = data["feature"]
+            response = bot_dict[user_id].update_state_experiment(question_id=question_id, feature_id=feature_id)
+        except Exception as ext:
+            app.logger.info(f"Traceback getting bot response: {traceback.format_exc()}")
+            app.logger.info(f"Exception getting bot response: {ext}")
+            response = "Sorry! I couldn't understand that. Could you please try to rephrase?"
+
+        message_dict = {
+            "isUser": False,
+            "feedback": True,
+            "text": response[0],
+            "id": question_id,
+            "feature_id": feature_id
+        }
+
+        return jsonify(message_dict)
+
+
+@bp.route("/set_user_prediction", methods=['POST'])
+def set_user_prediction():
+    """Set the user prediction."""
+    user_id = request.args.get("user_id")
+    data = json.loads(request.data)
+    user_prediction = data["user_prediction"]
+    if user_id is None:
+        user_id = "TEST"
+    bot = bot_dict[user_id]
+    bot.set_user_prediction(user_prediction)
+    return "200 OK"
+
+
 app = Flask(__name__)
 app.register_blueprint(bp, url_prefix=args.baseurl)
+CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})
 
 if __name__ != '__main__':
     gunicorn_logger = logging.getLogger('gunicorn.error')
@@ -138,4 +326,4 @@ if __name__ != '__main__':
 if __name__ == "__main__":
     # clean up storage file on restart
     app.logger.info(f"Launching app from config: {args.config}")
-    app.run(debug=False, port=4455, host='0.0.0.0')
+    app.run(debug=False, port=4455, host='0.0.0.0', use_reloader=False)

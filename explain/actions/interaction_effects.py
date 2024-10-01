@@ -50,7 +50,11 @@ def measure_interaction_effects(conversation, parse_text, i, **kwargs):
 
     # Categorical features
     cat_features = conversation.get_var('dataset').contents['cat']
-    cat_feature_names = [data.columns[i] for i in cat_features]
+    # Check if already stored as strings
+    if isinstance(cat_features[0], str):
+        cat_feature_names = cat_features
+    else:  # Get the names of the features
+        cat_feature_names = [data.columns[i] for i in cat_features]
 
     interaction_explainer = FeatureInteraction(data=data,
                                                prediction_fn=predict_proba,

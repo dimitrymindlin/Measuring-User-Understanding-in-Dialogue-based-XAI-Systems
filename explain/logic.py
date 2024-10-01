@@ -7,21 +7,31 @@ the functions to get the responses to user inputs.
 import pickle
 from random import seed as py_random_seed
 import secrets
+from typing import Dict, List, Any, Optional
 
 import numpy as np
+import pandas as pd
 import torch
 
 from flask import Flask
 import gin
 
-from explain.action import run_action
+from create_experiment_data.diverse_instances_selection import DiverseInstances
+from explain.action import run_action, run_action_new, compute_explanation_report
 from explain.conversation import Conversation
 from explain.decoder import Decoder
-from explain.explanation import MegaExplainer, TabularDice
+from explain.explainers.anchor_explainer import TabularAnchor
+from explain.explainers.ceteris_paribus import CeterisParibus
+from explain.explainers.feature_statistics_explainer import FeatureStatisticsExplainer
+from explain.explanation import MegaExplainer
+from explain.explainers.dice_explainer import TabularDice
 from explain.parser import Parser, get_parse_tree
 from explain.prompts import Prompts
 from explain.utils import read_and_format_data
-from explain.write_to_log import log_dialogue_input
+from create_experiment_data.experiment_helper import ExperimentHelper
+from create_experiment_data.test_instances import TestInstances
+
+# from explain.write_to_log import log_dialogue_input
 
 
 app = Flask(__name__)
@@ -40,12 +50,14 @@ class ExplainBot:
     """The ExplainBot Class."""
 
     def __init__(self,
+                 study_group: str,
                  model_file_path: str,
                  dataset_file_path: str,
                  background_dataset_file_path: str,
                  dataset_index_column: int,
                  target_variable_name: str,
                  categorical_features: list[str],
+                 ordinary_features: list[str],
                  numerical_features: list[str],
                  remove_underscores: bool,
                  name: str,
@@ -56,10 +68,13 @@ class ExplainBot:
                  t5_config: str = None,
                  use_guided_decoding: bool = True,
                  feature_definitions: dict = None,
-                 skip_prompts: bool = False):
+                 skip_prompts: bool = False,
+                 instance_type_naming="instance",
+                 use_intent_recognition: bool = False, ):
         """The init routine.
 
         Arguments:
+            study_condition: The study condition for the experiment
             model_file_path: The filepath of the **user provided** model to explain. This model
                              should end with .pkl and support sklearn style functions like
                              .predict(...) and .predict_proba(...)
@@ -73,6 +88,7 @@ class ExplainBot:
                                   i.e., 'y'
             categorical_features: The names of the categorical features in the data. If None, they
                                   will be guessed.
+            ordinary_features: The names of the ordinal features in the data.
             numerical_features: The names of the numeric features in the data. If None, they will
                                 be guessed.
             remove_underscores: Whether to remove underscores in the feature names. This might help
@@ -87,6 +103,8 @@ class ExplainBot:
             t5_config: The path to the configuration file for t5 models, if using one of these.
             skip_prompts: Whether to skip prompt generation. This is mostly useful for running fine-tuned
                           models where generating prompts is not necessary.
+            categorical_mapping_path: Path to json mapping for each col that assigns a categorical var to an int.
+            use_intent_recognition: None or name of the intent recognition model to use.
         """
 
         # Set seeds
@@ -95,28 +113,42 @@ class ExplainBot:
         torch.manual_seed(seed)
 
         self.bot_name = name
+        self.study_group = study_group
 
-        # Prompt settings
-        self.prompt_metric = prompt_metric
-        self.prompt_ordering = prompt_ordering
-        self.use_guided_decoding = use_guided_decoding
+        # Variables for experiment
+        self.data_instances = []
+        self.train_instance_counter = 0
+        self.test_instance_counter = 0
+        self.user_prediction_dict = {}
+        self.current_instance = None
+        self.current_instance_type = "train"  # Or test
+        self.use_intent_recognition = use_intent_recognition
+        self.categorical_features = categorical_features
+        self.ordinary_features = ordinary_features
+        self.instance_type_naming = instance_type_naming
+        self.numerical_features = numerical_features
 
-        # A variable used to help file uploads
-        self.manual_var_filename = None
+        if use_intent_recognition == "t5":
+            # Prompt settings
+            self.prompt_metric = prompt_metric
+            self.prompt_ordering = prompt_ordering
+            self.use_guided_decoding = use_guided_decoding
 
-        self.decoding_model_name = parsing_model_name
+            # A variable used to help file uploads
+            self.manual_var_filename = None
+            self.decoding_model_name = parsing_model_name
 
-        # Initialize completion + parsing modules
-        app.logger.info(f"Loading parsing model {parsing_model_name}...")
-        self.decoder = Decoder(parsing_model_name,
-                               t5_config,
-                               use_guided_decoding=self.use_guided_decoding,
-                               dataset_name=name)
+            # Initialize completion + parsing modules
+            app.logger.info(f"Loading parsing model {parsing_model_name}...")
+            self.decoder = Decoder(parsing_model_name,
+                                   t5_config,
+                                   use_guided_decoding=self.use_guided_decoding,
+                                   dataset_name=name)
 
-        # Initialize parser + prompts as None
-        # These are done when the dataset is loaded
-        self.prompts = None
-        self.parser = None
+            # Initialize parser + prompts as None
+            # These are done when the dataset is loaded
+            self.prompts = None
+            self.parser = None
 
         # Set up the conversation object
         self.conversation = Conversation(eval_file_path=dataset_file_path,
@@ -135,22 +167,87 @@ class ExplainBot:
                           store_to_conversation=True,
                           skip_prompts=skip_prompts)
 
-        background_dataset = self.load_dataset(background_dataset_file_path,
-                                               dataset_index_column,
-                                               target_variable_name,
-                                               categorical_features,
-                                               numerical_features,
-                                               remove_underscores,
-                                               store_to_conversation=False)
+        background_dataset, background_y_values = self.load_dataset(background_dataset_file_path,
+                                                                    dataset_index_column,
+                                                                    target_variable_name,
+                                                                    categorical_features,
+                                                                    numerical_features,
+                                                                    remove_underscores,
+                                                                    store_to_conversation=False)
+
+        # Load Experiment Helper
+        helper = ExperimentHelper(self.conversation, categorical_features)
+        self.conversation.add_var('experiment_helper', helper, 'experiment_helper')
 
         # Load the explanations
-        self.load_explanations(background_dataset=background_dataset)
+        self.load_explanations(background_dataset=background_dataset, background_y_values=background_y_values)
 
     def init_loaded_var(self, name: bytes):
         """Inits a var from manual load."""
         self.manual_var_filename = name.decode("utf-8")
 
-    def load_explanations(self, background_dataset):
+    def get_next_instance_triple(self, instance_type, return_probability=False):
+        """
+        Returns the next instance in the data_instances list if possible.
+        param instance_type: type of instance to return, can be train, test or final_test
+        """
+        experiment_helper = self.conversation.get_var('experiment_helper').contents
+        self.current_instance, counter, self.current_instance_type = experiment_helper.get_next_instance(
+            instance_type=instance_type,
+            return_probability=return_probability)
+        return self.current_instance, counter
+
+    def get_study_group(self):
+        """Returns the study group."""
+        return self.study_group
+
+    def get_current_prediction(self):
+        """
+        Returns the current prediction.
+        """
+        # Can be either [2], then argmax, or [3] then its a string
+        if isinstance(self.current_instance[2], np.ndarray):
+            current_prediction = np.argmax(self.current_instance[2])
+            prediction_string = self.conversation.class_names[current_prediction]
+        else:
+            prediction_string = self.current_instance[3]  # This is the prediction string
+        return prediction_string
+
+    def set_user_prediction(self, user_prediction):
+        true_label = self.get_current_prediction()
+        current_id = self.current_instance[0]
+        reversed_dict = {value: key for key, value in self.conversation.class_names.items()}
+        true_label_as_int = reversed_dict[true_label]
+        try:
+            user_prediction_as_int = reversed_dict[user_prediction]
+        except KeyError:
+            user_prediction_as_int = int(1000)
+            # for "I don't know" option
+        print(f"User prediction: {user_prediction_as_int}, True label: {true_label_as_int}")
+        # Make 2d dict with self.current_instance_type as first key and current_id as second key
+        if self.current_instance_type not in self.user_prediction_dict:
+            self.user_prediction_dict[self.current_instance_type] = {}
+
+        self.user_prediction_dict[self.current_instance_type][current_id] = (user_prediction_as_int, true_label_as_int)
+
+    def get_user_correctness(self, train=False):
+        # Check self.user_prediction_dict for correctness
+        correct_counter = 0
+        total_counter = 0
+        # Get correct prediction dict
+        if train:
+            predictions_dict = self.user_prediction_dict["train"]
+        else:
+            predictions_dict = self.user_prediction_dict["test"]
+        # Calculate correctness
+        for instance_id, (user_prediction, true_label) in predictions_dict.items():
+            if user_prediction == true_label:
+                correct_counter += 1
+            total_counter += 1
+        correctness_string = f"{correct_counter} out of {total_counter}"
+        return correctness_string
+
+    def load_explanations(self, background_dataset, background_y_values):
         """Loads the explanations.
 
         If set in gin, this routine will cache the explanations.
@@ -166,31 +263,90 @@ class ExplainBot:
         data = self.conversation.get_var('dataset').contents['X']
         categorical_f = self.conversation.get_var('dataset').contents['cat']
         numeric_f = self.conversation.get_var('dataset').contents['numeric']
+        test_data_y = self.conversation.get_var('dataset').contents['y']
+
+        exp_helper = self.conversation.get_var("experiment_helper").contents
 
         # Load lime tabular explanations
         mega_explainer = MegaExplainer(prediction_fn=pred_f,
                                        data=background_dataset,
                                        cat_features=categorical_f,
-                                       class_names=self.conversation.class_names)
-        mega_explainer.get_explanations(ids=list(data.index),
-                                        data=data)
+                                       class_names=self.conversation.class_names,
+                                       categorical_mapping=exp_helper.categorical_mapping)
+
+        # Load diverse instances (explanations)
+        app.logger.info("...loading DiverseInstances...")
+        diverse_instances_explainer = DiverseInstances(
+            lime_explainer=mega_explainer.mega_explainer.explanation_methods['lime_0.75'])
+        diverse_instance_ids = diverse_instances_explainer.get_instance_ids_to_show(data=data,
+                                                                                    model=model,
+                                                                                    y_values=test_data_y,
+                                                                                    submodular_pick=False)
+        # Make new list of dicts {id: instance_dict} where instance_dict is a dict with column names as key and values as values.
+        diverse_instances = [{"id": i, "values": data.loc[i].to_dict()} for i in diverse_instance_ids]
+
+        # Load mega explainer explanations
+        mega_explainer.get_explanations(ids=diverse_instance_ids, data=data)
         message = (f"...loaded {len(mega_explainer.cache)} mega explainer "
                    "explanations from cache!")
         app.logger.info(message)
-        # Load lime dice explanations
+        # Load dice explanations
         tabular_dice = TabularDice(model=model,
                                    data=data,
                                    num_features=numeric_f,
-                                   class_names=self.conversation.class_names)
-        tabular_dice.get_explanations(ids=list(data.index),
+                                   class_names=self.conversation.class_names,
+                                   background_dataset=background_dataset,
+                                   features_to_vary=exp_helper.actionable_features)
+        tabular_dice.get_explanations(ids=diverse_instance_ids,
                                       data=data)
         message = (f"...loaded {len(tabular_dice.cache)} dice tabular "
                    "explanations from cache!")
         app.logger.info(message)
 
+        # Load anchor explanations
+        tabular_anchor = TabularAnchor(model=model,
+                                       data=data,
+                                       class_names=self.conversation.class_names,
+                                       feature_names=list(data.columns),
+                                       categorical_mapping=exp_helper.categorical_mapping)
+        tabular_anchor.get_explanations(ids=diverse_instance_ids,
+                                        data=data)
+
+        # Load Ceteris Paribus Explanations
+        ceteris_paribus_explainer = CeterisParibus(model=model,
+                                                   background_data=background_dataset,
+                                                   ys=background_y_values,
+                                                   class_names=self.conversation.class_names,
+                                                   feature_names=list(data.columns),
+                                                   categorical_mapping=exp_helper.categorical_mapping,
+                                                   ordinal_features=self.ordinary_features)
+        ceteris_paribus_explainer.get_explanations(ids=diverse_instance_ids,
+                                                   data=data)
+
+        # Load FeatureStatisticsExplainer with background data
+        feature_statistics_explainer = FeatureStatisticsExplainer(background_dataset,
+                                                                  background_y_values,
+                                                                  self.numerical_features,
+                                                                  feature_names=list(background_dataset.columns),
+                                                                  rounding_precision=self.conversation.rounding_precision,
+                                                                  categorical_mapping=exp_helper.categorical_mapping,
+                                                                  feature_units=exp_helper.template_manager.feature_units_mapping)
+        self.conversation.add_var('feature_statistics_explainer', feature_statistics_explainer, 'explanation')
+
         # Add all the explanations to the conversation
+        self.conversation.add_var('diverse_instances', diverse_instances, 'diverse_instances')
         self.conversation.add_var('mega_explainer', mega_explainer, 'explanation')
         self.conversation.add_var('tabular_dice', tabular_dice, 'explanation')
+        self.conversation.add_var('tabular_anchor', tabular_anchor, 'explanation')
+        self.conversation.add_var('ceteris_paribus', ceteris_paribus_explainer, 'explanation')
+
+        # Load test instances
+        test_instance_explainer = TestInstances(data, model, mega_explainer,
+                                                self.conversation.get_var("experiment_helper").contents,
+                                                diverse_instance_ids=diverse_instance_ids,
+                                                actionable_features=exp_helper.actionable_features)
+        test_instances = test_instance_explainer.get_test_instances()
+        self.conversation.add_var('test_instances', test_instances, 'test_instances')
 
     def load_model(self, filepath: str):
         """Loads a model.
@@ -268,26 +424,27 @@ class ExplainBot:
             # Store the dataset
             self.conversation.add_dataset(dataset, y_values, categorical, numeric)
 
-            # Set up the parser
-            self.parser = Parser(cat_features=categorical,
-                                 num_features=numeric,
-                                 dataset=dataset,
-                                 target=list(y_values))
+            if self.use_intent_recognition == "t5":
+                # Set up the parser
+                self.parser = Parser(cat_features=categorical,
+                                     num_features=numeric,
+                                     dataset=dataset,
+                                     target=list(y_values))
 
-            # Generate the available prompts
-            # make sure to add the "incorrect" temporary feature
-            # so we generate prompts for this
-            self.prompts = Prompts(cat_features=categorical,
-                                   num_features=numeric,
-                                   target=np.unique(list(y_values)),
-                                   feature_value_dict=self.parser.features,
-                                   class_names=self.conversation.class_names,
-                                   skip_creating_prompts=skip_prompts)
-            app.logger.info("..done")
+                # Generate the available prompts
+                # make sure to add the "incorrect" temporary feature
+                # so we generate prompts for this
+                self.prompts = Prompts(cat_features=categorical,
+                                       num_features=numeric,
+                                       target=np.unique(list(y_values)),
+                                       feature_value_dict=self.parser.features,
+                                       class_names=self.conversation.class_names,
+                                       skip_creating_prompts=skip_prompts)
+                app.logger.info("..done")
 
             return "success"
         else:
-            return dataset
+            return dataset, y_values
 
     def set_num_prompts(self, num_prompts):
         """Updates the number of prompts to a new number"""
@@ -303,7 +460,7 @@ class ExplainBot:
         """Performs the system logging."""
         assert isinstance(logging_input, dict), "Logging input must be dict"
         assert "time" not in logging_input, "Time field will be added to logging input"
-        log_dialogue_input(logging_input)
+        # log_dialogue_input(logging_input)
 
     @staticmethod
     def build_logging_info(bot_name: str,
@@ -356,6 +513,55 @@ class ExplainBot:
         else:
             return parse_tree, parsed_text,
 
+    def get_feature_tooltips(self):
+        """
+        Returns the feature tooltips for the current dataset.
+        """
+        return self.conversation.get_var("experiment_helper").contents.template_manager.feature_tooltip_mapping
+
+    def get_feature_units(self):
+        """
+        Returns the feature units for the current dataset.
+        """
+        return self.conversation.get_var("experiment_helper").contents.template_manager.feature_units_mapping
+
+    def get_questions(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Returns the questions and attributes and feature names for the current dataset.
+        """
+        try:
+            # Read the question bank CSV file
+            question_pd = pd.read_csv(self.conversation.question_bank_path, delimiter=";")
+
+            # Replace "instance" in all 'paraphrased' entries with instance_type_naming
+            question_pd["paraphrased"] = question_pd["paraphrased"].str.replace("instance", self.instance_type_naming)
+
+            # Create answer dictionary with general and feature questions
+            answer_dict = {
+                "general_questions": question_pd[question_pd["question_type"] == "general"]
+                                     .loc[:, ['q_id', 'paraphrased']]
+                .rename(columns={'paraphrased': 'question'})
+                .to_dict(orient='records'),
+
+                "feature_questions": question_pd[question_pd["question_type"] == "feature"]
+                                     .loc[:, ['q_id', 'paraphrased']]
+                .rename(columns={'paraphrased': 'question'})
+                .to_dict(orient='records')
+            }
+
+            return answer_dict
+
+        except FileNotFoundError:
+            raise Exception(f"File not found: {self.conversation.question_bank_path}")
+        except pd.errors.EmptyDataError:
+            raise Exception("The question bank CSV file is empty or invalid.")
+
+    def get_feature_names(self):
+        """
+        Returns the feature names for the current dataset.
+        """
+        return self.conversation.get_var("experiment_helper").contents.get_feature_names()
+
     def compute_parse_text_t5(self, text: str):
         """Computes the parsed text for the input using a t5 model.
 
@@ -403,7 +609,7 @@ class ExplainBot:
         else:
             return grammar, prompted_text
 
-    def update_state(self, text: str, user_session_conversation: Conversation):
+    def update_state_ttm(self, text: str, user_session_conversation: Conversation):
         """The main conversation driver.
 
         The function controls state updates of the conversation. It accepts the
@@ -447,3 +653,47 @@ class ExplainBot:
         final_result = returned_item + f"<>{response_id}"
 
         return final_result
+
+    def get_explanation_report(self):
+        """Returns the explanation report."""
+        instance_id = self.current_instance[0]
+        report = compute_explanation_report(self.conversation, instance_id,
+                                            instance_type_naming=self.instance_type_naming,
+                                            feature_display_name_mapping=self.get_feature_display_name_dict())
+        return report
+
+    def update_state_experiment(self,
+                                question_id: int = None,
+                                feature_id: int = None) -> tuple[str, int, Optional[int]]:
+        """The main experiment driver.
+
+                The function controls state updates of the conversation. It accepts the
+                user input as question_id and feature_id and returns the updates to the conversation.
+
+                Arguments:
+                    question_id: The question id from the user.
+                    feature_id: The feature id that the question is about.
+                Returns:
+                    output: The response to the user input.
+                """
+
+        instance_id = self.current_instance[0]
+
+        if feature_id is not None and feature_id != "":
+            feature_id = int(feature_id)
+
+        app.logger.info(f'USER INPUT: q_id:{question_id}, f_id:{feature_id}')
+        # Convert feature_id to int if not None
+        returned_item = run_action_new(self.conversation,
+                                       question_id,
+                                       instance_id,
+                                       feature_id,
+                                       instance_type_naming=self.instance_type_naming)
+
+        # self.log(logging_info) # Logging dict currently off.
+        # Concatenate final response, parse, and conversation representation
+        # This is done so that we can split both the parse and final
+        # response, then present all the data
+        # final_result = returned_item + f"<>{response_id}"
+        final_result = returned_item
+        return final_result, question_id, feature_id

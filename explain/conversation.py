@@ -60,7 +60,8 @@ class Conversation:
                  target_var_name: str = "y",
                  default_metric: str = "accuracy",
                  eval_file_path: str = None,
-                 feature_definitions: dict = None):
+                 feature_definitions: dict = None,
+                 question_bank_path: str = None):
         """
 
         Args:
@@ -95,6 +96,8 @@ class Conversation:
         self.followup = self.describe.get_text_description()
 
         self.default_metric = default_metric
+
+        self.question_bank_path = question_bank_path
 
     def get_feature_definition(self, feature_name):
         """Gets semantic feature definition."""

@@ -305,7 +305,7 @@
           });
           const result = $.ajax({
               type: 'POST',
-              url: "{{ url_for('.get_bot_response') }}",
+              url: "{{ url_for('.get_bot_response_from_nl') }}",
               data: dataPackage,
               processData: false,
               contentType: false,

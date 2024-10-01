@@ -7,6 +7,7 @@ import os
 import pickle as pkl
 import warnings
 from typing import Union, Any
+import dill
 
 import pandas as pd
 from tqdm import tqdm
@@ -16,8 +17,7 @@ from flask import Flask
 import gin
 import numpy as np
 
-import dice_ml
-
+from data.response_templates.feature_importances_template import textual_fi_with_values
 from explain.mega_explainer.explainer import Explainer
 
 app = Flask(__name__)
@@ -73,7 +73,10 @@ class Explanation:
     def _save_cache(self):
         """Saves the current self.cache."""
         with open(self.cache_loc, 'wb') as file:
-            pkl.dump(self.cache, file)
+            try:
+                pkl.dump(self.cache, file)
+            except AttributeError:
+                dill.dump(self.cache, file)
 
     def _get_from_cache(self, ids: list[int], ids_to_regenerate: list[int] = None):
         if ids_to_regenerate is None:
@@ -130,209 +133,6 @@ class Explanation:
 
 
 @gin.configurable
-class TabularDice(Explanation):
-    """Tabular dice counterfactual explanations."""
-
-    def __init__(self,
-                 model,
-                 data: pd.DataFrame,
-                 num_features: list[str],
-                 num_cfes_per_instance: int = 10,
-                 num_in_short_summary: int = 3,
-                 desired_class: str = "opposite",
-                 cache_location: str = "./cache/dice-tabular.pkl",
-                 class_names: dict = None):
-        """Init.
-
-        Arguments:
-            model: the sklearn style model, where model.predict(data) returns the predictions
-                   and model.predict_proba returns the prediction probabilities
-            data: the pandas df data
-            num_features: The *names* of the numerical features in the dataframe
-            num_cfes_per_instance: The total number of cfes to generate per instance
-            num_in_short_summary: The number of cfes to include in the short summary
-            desired_class: Set to "opposite" to compute opposite class
-            cache_location: Location to store cache.
-            class_names: The map between class names and text class description.
-        """
-        super().__init__(cache_location, class_names)
-        self.temp_outcome_name = 'y'
-        self.model = self.wrap(model)
-        self.num_features = num_features
-        self.desired_class = desired_class
-        self.num_cfes_per_instance = num_cfes_per_instance
-        self.num_in_short_summary = num_in_short_summary
-
-        self.dice_model = dice_ml.Model(model=self.model, backend="sklearn")
-
-        # Format data in dice accepted format
-        predictions = self.model.predict(data)
-        if self.model.predict_proba(data).shape[1] > 2:
-            self.non_binary = True
-        else:
-            self.non_binary = False
-        data[self.temp_outcome_name] = predictions
-
-        self.classes = np.unique(predictions)
-        self.dice_data = dice_ml.Data(dataframe=data,
-                                      continuous_features=self.num_features,
-                                      outcome_name=self.temp_outcome_name)
-
-        data.pop(self.temp_outcome_name)
-
-        self.exp = dice_ml.Dice(
-            self.dice_data, self.dice_model, method="random")
-
-    def wrap(self, model: Any):
-        """Wraps model, converting pd to df to silence dice warnings"""
-        class Model:
-            def __init__(self, m):
-                self.model = m
-
-            def predict(self, X):
-                return self.model.predict(X.values)
-
-            def predict_proba(self, X):
-                return self.model.predict_proba(X.values)
-        return Model(model)
-
-    def run_explanation(self,
-                        data: pd.DataFrame,
-                        desired_class: str = None):
-        """Generate tabular dice explanations.
-
-        Arguments:
-            data: The data to generate explanations for in pandas df.
-            desired_class: The desired class of the cfes. If None, will use the default provided
-                           at initialization.
-        Returns:
-            explanations: The generated cf explanations.
-        """
-        if self.temp_outcome_name in data:
-            raise NameError(f"Target Variable {self.temp_outcome_name} should not be in data.")
-
-        if desired_class is None:
-            desired_class = self.desired_class
-
-        cfes = {}
-        for d in tqdm(list(data.index)):
-            # dice has a few function calls that are going to be deprecated
-            # silence warnings for ease of use now
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                if self.non_binary and desired_class == "opposite":
-                    desired_class = int(np.random.choice([p for p in self.classes if p != self.model.predict(data.loc[[d]])[0]]))
-                cur_cfe = self.exp.generate_counterfactuals(data.loc[[d]],
-                                                            total_CFs=self.num_cfes_per_instance,
-                                                            desired_class=desired_class)
-            cfes[d] = cur_cfe
-        return cfes
-
-    def get_change_string(self, cfe: Any, original_instance: Any):
-        """Builds a string describing the changes between the cfe and original instance."""
-        cfe_features = list(cfe.columns)
-        original_features = list(original_instance.columns)
-        message = "CFE features and Original Instance features are different!"
-        assert set(cfe_features) == set(original_features), message
-
-        change_string = ""
-        for feature in cfe_features:
-            orig_f = original_instance[feature].values[0]
-            cfe_f = cfe[feature].values[0]
-
-            if isinstance(cfe_f, str):
-                cfe_f = float(cfe_f)
-
-            if orig_f != cfe_f:
-                if cfe_f > orig_f:
-                    inc_dec = "increase"
-                else:
-                    inc_dec = "decrease"
-                change_string += f"{inc_dec} {feature} to {str(round(cfe_f, self.rounding_precision))}"
-                change_string += " and "
-        # Strip off last and
-        change_string = change_string[:-5]
-        return change_string
-
-    def summarize_explanations(self,
-                               data: pd.DataFrame,
-                               ids_to_regenerate: list[int] = None,
-                               filtering_text: str = None,
-                               save_to_cache: bool = False):
-        """Summarizes explanations for dice tabular.
-
-        Arguments:
-            data: pandas df containing data.
-            ids_to_regenerate:
-            filtering_text:
-            save_to_cache:
-        Returns:
-            summary: a string containing the summary.
-        """
-
-        if ids_to_regenerate is None:
-            ids_to_regenerate = []
-        if data.shape[0] > 1:
-            return ("", "I can only compute how to flip predictions for single instances at a time."
-                    " Please narrow down your selection to a single instance. For example, you"
-                    " could specify the id of the instance to want to figure out how to change.")
-
-        ids = list(data.index)
-        key = ids[0]
-
-        explanation = self.get_explanations(ids,
-                                            data,
-                                            ids_to_regenerate=ids_to_regenerate,
-                                            save_to_cache=save_to_cache)
-        original_prediction = self.model.predict(data)[0]
-        original_label = self.get_label_text(original_prediction)
-
-        cfe = explanation[key]
-        final_cfes = cfe.cf_examples_list[0].final_cfs_df
-        final_cfe_ids = list(final_cfes.index)
-
-        if self.temp_outcome_name in final_cfes.columns:
-            final_cfes.pop(self.temp_outcome_name)
-
-        new_predictions = self.model.predict(final_cfes)
-
-        original_instance = data.loc[[key]]
-
-        if filtering_text is not None and len(filtering_text) > 0:
-            filtering_description = f"For instances where <b>{filtering_text}</b>"
-        else:
-            filtering_description = ""
-        output_string = f"{filtering_description}, the original prediction is "
-        output_string += f"<em>{original_label}</em>. "
-        output_string += "Here are some options to change the prediction of this instance."
-        output_string += "<br><br>"
-
-        additional_options = "Here are some more options to change the prediction of"
-        additional_options += f" instance id {str(key)}.<br><br>"
-
-        output_string += "First, if you <em>"
-        transition_words = ["Further,", "Also,", "In addition,", "Furthermore,"]
-
-        for i, c_id in enumerate(final_cfe_ids):
-            # Stop the summary in case its getting too large
-            if i < self.num_in_short_summary:
-                if i != 0:
-                    output_string += f"{np.random.choice(transition_words)} if you <em>"
-                output_string += self.get_change_string(final_cfes.loc[[c_id]], original_instance)
-                new_prediction = self.get_label_text(new_predictions[i])
-                output_string += f"</em>, the model will predict {new_prediction}.<br><br>"
-            else:
-                additional_options += "If you <em>"
-                additional_options += self.get_change_string(final_cfes.loc[[c_id]], original_instance)
-                new_prediction = self.get_label_text(new_predictions[i])
-                additional_options += f"</em>, the model will predict {new_prediction}.<br><br>"
-
-        output_string += "If you want some more options, just ask &#129502"
-
-        return additional_options, output_string
-
-
-@gin.configurable
 class MegaExplainer(Explanation):
     """Generates many model agnostic explanations and selects the best one.
 
@@ -346,7 +146,8 @@ class MegaExplainer(Explanation):
                  cat_features: Union[list[int], list[str]],
                  cache_location: str = "./cache/mega-explainer-tabular.pkl",
                  class_names: list[str] = None,
-                 use_selection: bool = True):
+                 use_selection: bool = True,
+                 categorical_mapping: dict = None):
         """Init.
 
         Args:
@@ -369,6 +170,7 @@ class MegaExplainer(Explanation):
                                         feature_names=data.columns,
                                         discrete_features=cat_features,
                                         use_selection=use_selection)
+        self.categorical_mapping = categorical_mapping
 
     @staticmethod
     def get_cat_features(data: pd.DataFrame,
@@ -527,11 +329,96 @@ class MegaExplainer(Explanation):
 
         return full_print_out, shortened_output
 
+    def get_feature_importances(self, data: pd.DataFrame, ids_to_regenerate: list = None, save_to_cache=False):
+        """
+        Arguments:
+            data: pandas df containing data.
+            ids_to_regenerate: ids of instances to regenerate explanations for even if they're cached.
+            save_to_cache: whether to write explanations generated_to_cache.
+                           If ids are regenerated and save_to_cache is set to true,
+                           the existing explanations will be overwritten.
+        Returns:
+            feature_importances: A dictionary mapping label -> feature name -> list of importances.
+            scores: A dictionary mapping label -> list of scores.
+        """
+
+        def _extract_feature_importances(explanations):
+            """
+            Extracts feature importances from explanations. The explanations are assumed to be
+            of the form {id: explanation} where explanation is an instance of the Explanation class.
+            """
+            feature_importances = {}
+            for current_id, explanation in explanations.items():
+                label = explanation.label
+                if label not in feature_importances:
+                    feature_importances[label] = {}
+
+                for feature_name, importance in explanation.list_exp:
+                    if feature_name not in feature_importances[label]:
+                        feature_importances[label][feature_name] = []
+                    feature_importances[label][feature_name].append(importance)
+
+            return feature_importances
+
+        def _extract_scores(explanations):
+            scores = {}
+            for current_id, explanation in explanations.items():
+                label = explanation.label
+                if label not in scores:
+                    scores[label] = []
+                scores[label].append(explanation.score)
+
+            return scores
+
+        if ids_to_regenerate is None:
+            ids_to_regenerate = []
+
+        explanations = self.get_explanations(list(data.index), data, ids_to_regenerate=ids_to_regenerate,
+                                             save_to_cache=save_to_cache)
+
+        feature_importances = _extract_feature_importances(explanations)
+        scores = _extract_scores(explanations)
+
+        return feature_importances, scores
+
+    def get_information_to_print_explanation(self,
+                                             feature_importances: dict,
+                                             feature_values=None,
+                                             include_feature_value: bool = False):
+        for label in feature_importances:
+            sig_coefs = []
+            for feature_imp in feature_importances[label]:
+                if feature_values is not None and self.categorical_mapping is not None:
+                    feature_value = feature_values[feature_imp].values[0]
+                    column_id = self.data.columns.get_loc(feature_imp)
+                    try:
+                        decoded_feature_value = self.categorical_mapping[column_id][int(feature_value)]
+                    except KeyError:
+                        decoded_feature_value = feature_value
+                    if include_feature_value:
+                        sig_coefs.append([feature_imp + f" ({str(decoded_feature_value)})",
+                                          np.mean(feature_importances[label][feature_imp])])
+                    else:
+                        sig_coefs.append([feature_imp,
+                                          np.mean(feature_importances[label][feature_imp])])
+                else:
+                    sig_coefs.append([feature_imp,
+                                      np.mean(feature_importances[label][feature_imp])])
+
+            sig_coefs.sort(reverse=True, key=lambda x: abs(x[1]))
+            app.logger.info(sig_coefs)
+            # round the feature importance values to 2 decimal places
+            for i in range(len(sig_coefs)):
+                sig_coefs[i][1] = round(sig_coefs[i][1], 2)
+
+        return sig_coefs
+
     def summarize_explanations(self,
                                data: pd.DataFrame,
                                ids_to_regenerate: list = None,
                                filtering_text: str = None,
-                               save_to_cache: bool = False):
+                               save_to_cache: bool = False,
+                               template_manager=None):
         """Summarizes explanations for lime tabular.
 
         Arguments:
@@ -544,47 +431,10 @@ class MegaExplainer(Explanation):
         Returns:
             summary: a string containing the summary.
         """
-        if ids_to_regenerate is None:
-            ids_to_regenerate = []
-        ids = list(data.index)
 
-        # Note that the explanations are returned as MegaExplanation
-        # dataclass instances
-        explanations = self.get_explanations(ids,
-                                             data,
-                                             ids_to_regenerate=ids_to_regenerate,
-                                             save_to_cache=save_to_cache)
-
-        # Keep a dictionary of the different labels being
-        # explained and the associated feature importances.
-        # This dictionary maps label -> feature name -> feature importances
-        # Doing this makes it easy to summarize explanations across different
-        # predicted classes.
-        feature_importances = {}
-
-        # The same as above except for scores
-        scores = {}
-        for i, current_id in enumerate(ids):
-
-            # store the coefficients of the explanation
-            label = explanations[current_id].label
-            list_exp = explanations[current_id].list_exp
-
-            # Add the label if it is not in the dictionary
-            if label not in feature_importances:
-                feature_importances[label] = {}
-
-            for tup in list_exp:
-                if tup[0] not in feature_importances[label]:
-                    feature_importances[label][tup[0]] = []
-                feature_importances[label][tup[0]].append(tup[1])
-
-            # also retain the scores
-            if label not in scores:
-                scores[label] = []
-            scores[label].append(explanations[ids[i]].score)
-
-        full_summary, short_summary = self.format_explanations_to_string(feature_importances,
-                                                                         scores,
-                                                                         filtering_text)
-        return full_summary, short_summary
+        feature_importances, scores = self.get_feature_importances(data, ids_to_regenerate, save_to_cache)
+        sig_coefs = self.get_information_to_print_explanation(feature_importances, data)
+        response = textual_fi_with_values(sig_coefs,
+                                          filtering_text=filtering_text,
+                                          template_manager=template_manager)
+        return response, response
