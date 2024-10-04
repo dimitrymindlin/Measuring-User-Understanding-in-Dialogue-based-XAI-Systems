@@ -41,13 +41,13 @@ is needed to run the experiment UI.
 
 ### Model and Dataset
 The `data` folder contains the data and train scripts. For example, `adult.csv` is used in `adult_train.py` to train a 
-random forest model and save the model, model settings and column information in a separate folder 'adult' for the 
+random forest model and save the model, model settings and column information in a separate folder `adult` for the 
 explanations later on. When introducing a new dataset, make a new train script and make sure to save the column mappings
 and settings in a separate folder.
 
 ### Configuration
-To run the experiments on your own dataset, create a new config fle in configs folder. Take the adult-config.gin as 
-an example and adjust the settings to your needs.
+To run the experiments on your own dataset, create a new config fle in configs folder. Take the `adult-config.gin` as 
+an example and adjust the settings to your needs. Then set the `global_config.gin` to your new config file.
 
 ## Main changes compared to TalkToModel
 
