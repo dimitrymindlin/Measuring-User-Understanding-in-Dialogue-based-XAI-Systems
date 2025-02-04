@@ -72,7 +72,7 @@ an example and adjust the settings to your needs. Then set the `global_config.gi
 ## Citation
 
 ```bibtex
-@inproceedings{DBLP:conf/ecai/MindlinRMC24,
+@inproceedings{MindlinRMC24,
   author       = {Dimitry Mindlin and
                   Amelie Sophie Robrecht and
                   Michael Morasch and
@@ -84,12 +84,9 @@ an example and adjust the settings to your needs. Then set the `global_config.gi
                   2024)},
   pages        = {1148--1155},
   year         = {2024},
-  crossref     = {DBLP:conf/ecai/2024},
   url          = {https://doi.org/10.3233/FAIA240608},
   doi          = {10.3233/FAIA240608},
   timestamp    = {Wed, 15 Jan 2025 15:09:06 +0100},
-  biburl       = {https://dblp.org/rec/conf/ecai/MindlinRMC24.bib},
-  bibsource    = {dblp computer science bibliography, https://dblp.org}
 }
 ```
 
