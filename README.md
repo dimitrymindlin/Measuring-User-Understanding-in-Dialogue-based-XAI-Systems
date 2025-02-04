@@ -72,19 +72,24 @@ an example and adjust the settings to your needs. Then set the `global_config.gi
 ## Citation
 
 ```bibtex
-@Article{Mindlin2024,
-author={Dimitry, Mindlin
-and Michael, Morasch
-and Amelia, Robrecht
-and Philipp, Cimiano},
-title={Measuring-User-Understanding-in-Dialogue-based-XAI-Systems},
-journal={},
-year={2024},
-month={},
-day={},
-issn={},
-doi={},
-url={}
+@inproceedings{DBLP:conf/ecai/MindlinRMC24,
+  author       = {Dimitry Mindlin and
+                  Amelie Sophie Robrecht and
+                  Michael Morasch and
+                  Philipp Cimiano},
+  title        = {Measuring User Understanding in Dialogue-Based xAI Systems},
+  booktitle    = {{ECAI} 2024 - 27th European Conference on Artificial Intelligence,
+                  19-24 October 2024, Santiago de Compostela, Spain - Including 13th
+                  Conference on Prestigious Applications of Intelligent Systems {(PAIS}
+                  2024)},
+  pages        = {1148--1155},
+  year         = {2024},
+  crossref     = {DBLP:conf/ecai/2024},
+  url          = {https://doi.org/10.3233/FAIA240608},
+  doi          = {10.3233/FAIA240608},
+  timestamp    = {Wed, 15 Jan 2025 15:09:06 +0100},
+  biburl       = {https://dblp.org/rec/conf/ecai/MindlinRMC24.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
 }
 ```
 
